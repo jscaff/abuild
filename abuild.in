@@ -156,6 +156,12 @@ cleanup() {
 		pkgdir) msg "Cleaning up pkgdir"; rm -rf "$pkgbasedir";;
 		srcdir) msg "Cleaning up srcdir"; cleanup_srcdir;;
 		tmpdir) msg "Cleaning up tmpdir"; rm -rf "$tmpdir";;
+		reproduce)
+			if [ "$REPRODUCE_ROOT" ]; then
+				msg "Cleaning up reproduction root"
+				rm -rf "$REPRODUCE_ROOT"
+			fi
+			;;
 		deps)
 			if [ -n "$uninstall_after" ]; then
 				msg "Uninstalling dependencies..."
@@ -2532,6 +2538,7 @@ rootbld_qemu_arch() {
 }
 
 rootbld() {
+	local rootbld_pkg_versions="$1"
 	if ! [ -n "$force" ] && ! check_arch; then
 		msg "Package not available for the target architecture ($CARCH). Skipping."
 		return
@@ -2594,20 +2601,34 @@ rootbld() {
 		echo "127.0.0.1    localhost" >> "$BUILD_ROOT/etc/hosts"
 	fi
 
-	calcdeps
-
 	# Install core system first to fix possible post-install triggers requiring runtime linking (cough cough busybox)
-	$APK add --initdb --update --usermode \
-		--arch $CBUILD_ARCH \
-		--root "$BUILD_ROOT" \
-		${cachedir:+--cache-dir $cachedir} \
-		qnx-microkernel qnx-gcc-libs filesystem
+	local wave_1_pkgs="qnx-microkernel qnx-gcc-libs filesystem"
+	local wave_2_pkgs="abuild qnx-packaging tar sed bash diffutils $hostdeps $builddeps"
+	if [ "$rootbld_pkg_versions" ]; then
+		local wave_1_versions=""
+		for wave_1_pkg in $wave_1_pkgs; do
+			wave_1_versions+=" $(echo "$rootbld_pkg_versions" | grep "$wave_1_pkg=")"
+		done
+		wave_1_pkgs="$wave_1_versions"
+		wave_2_pkgs="$rootbld_pkg_versions" # It's fine to re-install wave_1_pkgs in the 2nd wave, apk is smart
+	else
+		# I'm ngl, not sure what this does in the context of a rootbld...
+		calcdeps
+	fi
 
 	$APK add --initdb --update --usermode \
 		--arch $CBUILD_ARCH \
 		--root "$BUILD_ROOT" \
 		${cachedir:+--cache-dir $cachedir} \
-		abuild qnx-packaging tar sed bash diffutils $hostdeps $builddeps
+		$wave_1_pkgs
+
+
+	$APK add --initdb --update --usermode \
+		--arch $CBUILD_ARCH \
+		--root "$BUILD_ROOT" \
+		${cachedir:+--cache-dir $cachedir} \
+		$wave_2_pkgs
+
 
 
 	# busybox adduser/addgroup check if uid is 0 so we need to generate the files manually
@@ -2665,6 +2686,32 @@ rootbld() {
 
 	update_abuildrepo_index
 	cleanup $CLEANUP
+}
+
+reproduce() {
+    local artifact_build_deps=$(cat "$REPRODUCE_ROOT"/.BUILDINFO | grep "^installed" | sed -r "s/installed = (.*)$/\1/" | grep -v "makedepends" )
+
+	rootbld "$artifact_build_deps"
+
+	local artifact_name="$(basename $sample_artifact)"
+
+	# Find the path to the new artifact
+	local new_arti_path=$(find "$REPODEST" -name "$artifact_name")
+	mkdir -p "$REPRODUCE_ROOT/new_arti"
+    tar -xf "$sample_artifact" -C "$REPRODUCE_ROOT/new_arti" .BUILDINFO .PKGINFO 2> /dev/null
+
+    local old_datahash=$(cat "$REPRODUCE_ROOT"/.PKGINFO | grep "^datahash" | sed -r "s/datahash = (.*)$/\1/" )
+    local new_datahash=$(cat "$REPRODUCE_ROOT"/new_arti/.PKGINFO | grep "^datahash" | sed -r "s/datahash = (.*)$/\1/" )
+
+	cleanup reproduce
+
+	if [ "$old_datahash" = "$new_datahash" ]; then
+		msg "REPRODUCTION_SUCCESS: Artifacts bit for bit identical!"
+		exit 0
+	else
+		error "REPRODUCTION_FAIL: Artifacts are different... Could not reproduce"
+		exit 1
+	fi
 }
 
 stripbin() {
@@ -2877,11 +2924,37 @@ snapshot() {
 	fi
 }
 
+init_reproduce_environment() {
+    REPRODUCE_ROOT=$(mktemp -d "/tmp/.extract_old.XXXXXXXX")
+    tar -xf "$sample_artifact" -C "$REPRODUCE_ROOT" .BUILDINFO .PKGINFO 2> /dev/null
+
+    if [[ ! -f "$REPRODUCE_ROOT"/.BUILDINFO ]]; then
+        die "APK too old to contain .BUILDINFO, cannot reproduce"
+    fi
+    local aports_commit=$(cat "$REPRODUCE_ROOT"/.PKGINFO | grep "^commit" | sed -r "s/commit = (.*)$/\1/" )
+    if [[ "$aports_commit" == *"-dirty" ]]; then
+        log warn "APK built with dirty commit, may not be able to reproduce"
+        aports_commit=$(echo "$aports_commit" | sed -r "s/^([a-z0-9]*)-dirty/\1/")
+    fi
+    local start_dir=$(cat "$REPRODUCE_ROOT"/.BUILDINFO | grep "^startdir" | sed -r "s/startdir = (.*)$/\1/" )
+    local repo_path=$(echo "$start_dir" | sed -r "s/^.*\/(.*\/.*)$/\1/") # extract the stream/package path so we know which package to rebuild
+
+	# hardcode for now git url
+	local upstream="https://github.com/qnx-ports/aports"
+	if ! git clone "$upstream" "$REPRODUCE_ROOT/aports" --revision="$aports_commit" --depth=1 > /dev/null; then
+		die "Failed to clone repo $upstream : Exit code $?"
+	fi
+
+	export APORTSDIR="$REPRODUCE_ROOT/aports"
+	export APKBUILD="$APORTSDIR/$repo_path/APKBUILD"
+}
+
 usage() {
 	cat <<-EOF
 		usage: $program [options] [-C DIR] [-P REPODEST] [-s SRCDEST] [-D DESC] [cmd] ...
 		       $program [-c] -n PKGNAME[-PKGVER]
 		Options:
+		 -a  Sample artifact for build reproduction
 		 -A  Print CARCH and exit
 		 -c  Enable colored output
 		 -C  Change directory before running any commands
@@ -2922,6 +2995,7 @@ usage() {
 		  undeps      Uninstall packages listed in makedepends and depends
 		  unpack      Unpack sources to \$srcdir
 		  up2date     Compare target and sources dates
+		  reproduce   Rebuilds an APK in a chroot with the same dependencies and compares the output
 
 		To activate cross compilation specify in environment:
 		  CHOST       Arch or triplet of machine to generate packages for
@@ -2932,8 +3006,9 @@ usage() {
 
 APKBUILD="${APKBUILD:-./APKBUILD}"
 unset color_opt force forceroot install_deps keep keep_build nodeps quiet verbose
-while getopts ":AcC:dD:fFhkKmnP:qrs:vV" opt; do
+while getopts ":a:AcC:dD:fFhkKmnP:qrs:vV" opt; do
 	case $opt in
+		'a') sample_artifact=$(realpath "$OPTARG");;
 		'A') echo "$CARCH"; exit 0;;
 		'c') enable_colors
 			 color_opt="-c";;
@@ -2970,6 +3045,12 @@ if [ -n "$USE_CCACHE" ]; then
 	mkdir -p "${CCACHE_DIR:-$HOME/.ccache}"
 	# prepend ccache path
 	export PATH="/usr/lib/ccache/bin:$PATH"
+fi
+
+# gather info from the .apk file if necessary
+if [ ! -z "$sample_artifact" ]; then
+	[ "$1" = "reproduce" ] || die "-a flag is only compatible with 'abuild reproduce'"
+	init_reproduce_environment
 fi
 
 # find startdir
