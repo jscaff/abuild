@@ -2698,18 +2698,27 @@ reproduce() {
 	# Find the path to the new artifact
 	local new_arti_path=$(find "$REPODEST" -name "$artifact_name")
 	mkdir -p "$REPRODUCE_ROOT/new_arti"
-    tar -xf "$sample_artifact" -C "$REPRODUCE_ROOT/new_arti" .BUILDINFO .PKGINFO 2> /dev/null
+    tar -xf "$sample_artifact" -C "$REPRODUCE_ROOT/new_arti" .PKGINFO 2> /dev/null
 
     local old_datahash=$(cat "$REPRODUCE_ROOT"/.PKGINFO | grep "^datahash" | sed -r "s/datahash = (.*)$/\1/" )
     local new_datahash=$(cat "$REPRODUCE_ROOT"/new_arti/.PKGINFO | grep "^datahash" | sed -r "s/datahash = (.*)$/\1/" )
 
+	find "$REPODEST" -name "*.apk" -print0 |
+	while IFS= read -r -d '' arti_path; do
+		rm -f "$REPRODUCE_ROOT/new_arti/.PKGINFO"
+		tar -xf "$arti_path" -C "$REPRODUCE_ROOT/new_arti" .PKGINFO 2> /dev/null
+		echo "reproduction_apk = $(basename "$arti_path")"
+		echo "reproduction_datahash = $(cat "$REPRODUCE_ROOT"/new_arti/.PKGINFO | grep "^datahash" | sed -r "s/datahash = (.*)$/\1/" )"
+	done
+
 	cleanup reproduce
 
 	if [ "$old_datahash" = "$new_datahash" ]; then
-		msg "REPRODUCTION_SUCCESS: Artifacts bit for bit identical!"
-		exit 0
+		echo "reproduction_success = true"
+		msg "Artifacts bit for bit identical!"
 	else
-		error "REPRODUCTION_FAIL: Artifacts are different... Could not reproduce"
+		echo "reproduction_success = false"
+		msg "Artifacts are different... Could not reproduce"
 		exit 1
 	fi
 }
