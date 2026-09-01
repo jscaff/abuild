@@ -2601,6 +2601,7 @@ rootbld() {
 		echo "127.0.0.1    localhost" >> "$BUILD_ROOT/etc/hosts"
 	fi
 
+	calcdeps # sets hostdeps and builddeps
 	# Install core system first to fix possible post-install triggers requiring runtime linking (cough cough busybox)
 	local wave_1_pkgs="qnx-microkernel qnx-gcc-libs filesystem"
 	local wave_2_pkgs="abuild qnx-packaging tar sed bash diffutils $hostdeps $builddeps"
@@ -2611,9 +2612,6 @@ rootbld() {
 		done
 		wave_1_pkgs="$wave_1_versions"
 		wave_2_pkgs="$rootbld_pkg_versions" # It's fine to re-install wave_1_pkgs in the 2nd wave, apk is smart
-	else
-		# I'm ngl, not sure what this does in the context of a rootbld...
-		calcdeps
 	fi
 
 	$APK add --initdb --update --usermode \
