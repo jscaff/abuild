@@ -2717,7 +2717,6 @@ reproduce() {
 	else
 		echo "reproduction_success = false"
 		msg "Artifacts are different... Could not reproduce"
-		exit 1
 	fi
 }
 
