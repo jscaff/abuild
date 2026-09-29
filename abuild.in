@@ -1613,14 +1613,9 @@ trace_apk_deps() {
 	done
 
 	echo "# automatically detected:" >> "$dir"/.PKGINFO
-	if [ -f "$dir"/.provides-pc ]; then
-		sed 's/^/provides = pc:/' "$dir"/.provides-pc | sort -u \
-			>> "$dir"/.PKGINFO
-	fi
-	if [ -f "$dir"/.provides-py ]; then
-		sed 's/^/provides = /' "$dir"/.provides-py | sort -u \
-			>> "$dir"/.PKGINFO
-	fi
+	touch "$dir"/.provides-dummy
+	sed 's/^/provides = /' "$dir"/.provides-* | sort -u >> "$dir"/.PKGINFO
+
 	for i in $autodeps; do
 		echo "depend = $i"
 	done | sort -u >> "$dir"/.PKGINFO
