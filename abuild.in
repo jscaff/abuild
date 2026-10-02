@@ -2603,7 +2603,7 @@ rootbld() {
 		${cachedir:+--cache-dir $cachedir} \
 		qnx-microkernel qnx-gcc-libs filesystem
 
-	$APK add --initdb --update --usermode \
+	LD_PRELOAD="/usr/lib/libchrootfix.so" $APK add --initdb --update --usermode --preserve-env \
 		--arch $CBUILD_ARCH \
 		--root "$BUILD_ROOT" \
 		${cachedir:+--cache-dir $cachedir} \
